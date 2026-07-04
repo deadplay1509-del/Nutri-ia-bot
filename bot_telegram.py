@@ -9,28 +9,34 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from google import genai
 
 # ==========================================
-# CONFIGURACIÓN Y VARIABLES DE ENTORNO
+# 1. CONFIGURACIÓN Y VARIABLES DE ENTORNO
 # ==========================================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 DB_NAME = "nutricion.db"
 
-# Inicializar Bot y cliente de Gemini
-bot = telebot.TeleBot(TOKEN)
-client = genai.Client(api_key=GEMINI_KEY)
+# Tus metas diarias para que funcione build_status_text()
+TARGET_PROTEIN = 140.0   
+TARGET_CARBS = 200.0     
+TARGET_WATER = 3.0       
+TARGET_CREATINE = 5.0    
 
-# Inicializar Flask para engañar a Render con el puerto
+# Inicializar Bot y cliente de Gemini usando la nueva librería
+bot = telebot.TeleBot(TOKEN)
+ai_client = genai.Client(api_key=GEMINI_KEY)
+
+# Servidor Flask ficticio para ganarle a Render
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot de Nutrición de Luis está vivito y coleando!"
+    return "¡El bot de nutrición de Luis está corriendo 24/7 en la nube!"
 
 # ==========================================
-# BASE DE DATOS (The Shield)
+# 2. DATABASE MANAGEMENT (The Shield)
 # ==========================================
 def init_db():
-    """Crea la base de datos local y las tablas si no existen."""
+    """Creates the local database file and tables if they don't exist."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
@@ -49,7 +55,7 @@ def init_db():
     conn.close()
 
 def get_or_create_today_record():
-    """Busca el registro de hoy o crea uno nuevo a cero."""
+    """Fetches today's record or creates a clean one if the day just started."""
     today = datetime.now().strftime('%Y-%m-%d')
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -73,123 +79,183 @@ def get_or_create_today_record():
         "carbs": row[5]
     }
 
-def update_today_record(data):
-    """Actualiza los valores del día de hoy en la base de datos."""
+def update_today_record(data_to_add):
+    """Updates the data permanently inside the Dell's hard drive."""
+    today = datetime.now().strftime('%Y-%m-%d')
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    current = get_or_create_today_record()
+    
+    new_chicken = current["chicken"] + data_to_add.get("chicken", 0.0)
+    new_rice = current["rice"] + data_to_add.get("rice", 0.0)
+    new_water = current["water"] + data_to_add.get("water", 0.0)
+    new_creatine = current["creatine"] + data_to_add.get("creatine", 0.0)
+    new_protein = current["protein"] + data_to_add.get("protein", 0.0)
+    new_carbs = current["carbs"] + data_to_add.get("carbs", 0.0)
+    
+    cursor.execute('''
+        UPDATE registros 
+        SET chicken = ?, rice = ?, water = ?, creatine = ?, protein = ?, carbs = ?
+        WHERE fecha = ?
+    ''', (new_chicken, new_rice, new_water, new_creatine, new_protein, new_carbs, today))
+    
+    conn.commit()
+    conn.close()
+
+def reset_today_record():
+    """Resets today's values back to zero in the database."""
     today = datetime.now().strftime('%Y-%m-%d')
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
         UPDATE registros 
-        SET chicken = ?, rice = ?, water = ?, creatine = ?, protein = ?, carbs = ?
+        SET chicken = 0.0, rice = 0.0, water = 0.0, creatine = 0.0, protein = 0.0, carbs = 0.0
         WHERE fecha = ?
-    ''', (data["chicken"], data["rice"], data["water"], data["creatine"], data["protein"], data["carbs"], today))
+    ''', (today,))
     conn.commit()
     conn.close()
 
 # ==========================================
-# LÓGICA DEL BOT DE TELEGRAM
+# 3. INTERACTIVE KEYBOARDS & TEXT GENERATION
 # ==========================================
+def get_main_keyboard():
+    markup = InlineKeyboardMarkup(row_width=2)
+    btn_food = InlineKeyboardButton("🍗 Registrar Comida (IA)", callback_data="nav_food")
+    btn_water = InlineKeyboardButton("💧 +250ml Agua", callback_data="quick_water")
+    btn_creatine = InlineKeyboardButton("💪 +5g Creatina", callback_data="quick_creatine")
+    btn_status = InlineKeyboardButton("📊 Ver Estado", callback_data="nav_status")
+    btn_reset = InlineKeyboardButton("🔄 Reiniciar Día", callback_data="nav_reset")
+    markup.add(btn_food, btn_water, btn_creatine, btn_status, btn_reset)
+    return markup
 
-# Comando /start
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    init_db()  # Asegura que la tabla exista al iniciar
-    username = message.from_user.first_name
-    texto_bienvenida = (
-        f"¡Hola {username}! Bienvenido a tu Inteligencia Artificial de Nutrición de confianza.\n\n"
-        "Escríbeme libremente lo que comiste (ejemplo: 'Me comí 200g de pollo y 250g de arroz') y yo me "
-        "encargaré de calcular los macronutrientes y guardarlos en tu registro diario. 🥦🍗"
-    )
-    bot.reply_to(message, texto_bienvenida)
+def build_status_text():
+    data = get_or_create_today_record()
+    
+    protein_left = TARGET_PROTEIN - data["protein"]
+    carbs_left = TARGET_CARBS - data["carbs"]
+    water_left = TARGET_WATER - data["water"]
+    creatine_left = TARGET_CREATINE - data["creatine"]
+    
+    return f"""
+📊 **PANEL DE CONTROL NUTRICIONAL (PROTEGIDO)**
+----------------------------------
+🍗 Pollo total: {data["chicken"]:.1f}g
+🍚 Arroz total: {data["rice"]:.1f}g
 
-# Escuchar TODOS los mensajes de texto (Comidas del usuario)
-@bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    user_text = message.text
-    chat_id = message.chat.id
-    
-    # Enviar un mensaje de "escribiendo..." para que el usuario sepa que la IA está pensando
-    bot.send_chat_action(chat_id, 'typing')
-    
-    # Buscar el registro de hoy antes de actualizarlo
-    current_totals = get_or_create_today_record()
-    
-    # Crear un prompt claro para Gemini exigiendo una respuesta en formato JSON estricto
+🔥 **PROGRESO NUTRICIONAL:**
+• **Proteína:** {data["protein"]:.1f}g / {TARGET_PROTEIN}g (Faltan: {max(0.0, protein_left):.1f}g)
+• **Carbohidratos:** {data["carbs"]:.1f}g / {TARGET_CARBS}g (Faltan: {max(0.0, carbs_left):.1f}g)
+
+💧 **HIDRATACIÓN Y SUPLEMENTOS:**
+• **Agua:** {data["water"]:.2f}L / {TARGET_WATER}L (Faltan: {max(0.0, water_left):.2f}L)
+• **Creatina:** {data["creatine"]:.1f}g / {TARGET_CREATINE}g (Faltan: {max(0.0, creatine_left):.1f}g)
+----------------------------------
+📌 *¿Qué deseas registrar ahora? Usa los botones o escribe texto libre.*
+"""
+
+# ==========================================
+# 4. IA PARSING LOGIC
+# ==========================================
+def parse_food_with_ai(user_text):
     prompt = f"""
-    Eres un experto en nutrición y un bot de backend estructurado. El usuario te dirá lo que comió en texto libre.
-    Tu trabajo es analizar el texto y extraer las cantidades aproximadas de los siguientes elementos en gramos o mililitros:
-    - chicken (pollo)
-    - rice (arroz)
-    - water (agua)
-    - creatine (creatina)
-    - protein (proteína total estimada de toda la comida)
-    - carbs (carbohidratos totales estimados de toda la comida)
-
-    Texto del usuario: "{user_text}"
-
-    Debes responder ÚNICAMENTE con un objeto JSON válido, sin bloques de código markdown, sin texto extra. Si un elemento no se menciona, ponlo en 0.0.
-    Ejemplo de respuesta exacta:
-    {{"chicken": 200.0, "rice": 150.0, "water": 0.0, "creatine": 0.0, "protein": 60.0, "carbs": 42.0}}
+    Eres un asistente de nutrición. Analiza este texto: "{user_text}"
+    Responde ÚNICAMENTE con un objeto JSON estricto, sin texto adicional, sin bloques ```json:
+    {{
+        "chicken": float,
+        "rice": float,
+        "water": float,
+        "creatine": float
+    }}
     """
-    
     try:
-        # Llamada a la API de Gemini usando la nueva librería genai
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        
-        # Limpiar la respuesta por si acaso la IA metió comillas extras o saltos de línea
-        json_text = response.text.strip().replace("```json", "").replace("```", "")
-        extracted_data = json.loads(json_text)
-        
-        # Sumar lo que calculó Gemini a los totales que el usuario ya llevaba en el día
-        current_totals["chicken"] += float(extracted_data.get("chicken", 0.0))
-        current_totals["rice"] += float(extracted_data.get("rice", 0.0))
-        current_totals["water"] += float(extracted_data.get("water", 0.0))
-        current_totals["creatine"] += float(extracted_data.get("creatine", 0.0))
-        current_totals["protein"] += float(extracted_data.get("protein", 0.0))
-        current_totals["carbs"] += float(extracted_data.get("carbs", 0.0))
-        
-        # Guardar los nuevos totales en "The Shield"
-        update_today_record(current_totals)
-        
-        # Responder de forma bonita al usuario
-        respuesta_usuario = (
-            "✅ ¡Comida registrada con éxito!\n\n"
-            f"📊 **Añadido en esta comida:**\n"
-            f"🍗 Pollo: {extracted_data.get('chicken', 0)}g\n"
-            f"🍚 Arroz: {extracted_data.get('rice', 0)}g\n"
-            f"🥩 Proteína Est.: {extracted_data.get('protein', 0)}g\n"
-            f"🍞 Carbohidratos Est.: {extracted_data.get('carbs', 0)}g\n\n"
-            f"📈 **Totales acumulados hoy:**\n"
-            f"🍗 Pollo total: {current_totals['chicken']}g\n"
-            f"🍚 Arroz total: {current_totals['rice']}g\n"
-            f"🥩 Proteínas totales: {current_totals['protein']}g\n"
-            f"🍞 Carbohidratos totales: {current_totals['carbs']}g"
-        )
-        bot.reply_to(message, respuesta_usuario)
-        
+        response = ai_client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+        clean_text = response.text.strip().replace("```json", "").replace("```", "")
+        return json.loads(clean_text)
     except Exception as e:
-        # Control de errores por si falla el JSON o la API
-        print(f"Error procesando el mensaje: {e}")
-        bot.reply_to(message, "Ups, lo siento Luis. Tuve un pequeño problema analizando esa comida. ¿Podrías volver a intentarlo de otra forma?")
+        print(f"❌ AI Parsing Error: {e}")
+        return None
 
 # ==========================================
-# EJECUCIÓN DEL SERVIDOR
+# 5. TELEGRAM EVENT HANDLERS (Tus Manejadores)
+# ==========================================
+@bot.message_handler(commands=['start', 'menu'])
+def send_welcome(message):
+    init_db()
+    text = "👋 **¡Hola Luis! Panel interactivo sincronizado con la Base de Datos.**\n" + build_status_text()
+    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_button_clicks(call):
+    bot.answer_callback_query(call.id)
+    
+    if call.data == "nav_food":
+        instructions = "✍️ **Registro por IA:** Escríbeme de forma natural lo que consumiste.\n*Ejemplo: 'Me comí 100g de pollo'*"
+        bot.send_message(call.message.chat.id, instructions, parse_mode="Markdown")
+        
+    elif call.data == "quick_water":
+        update_today_record({"water": 0.25})  # Writes to file instantly
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.id, text="💧 +250ml de agua guardados en el disco.\n" + build_status_text(), parse_mode="Markdown", reply_markup=get_main_keyboard())
+        
+    elif call.data == "quick_creatine":
+        update_today_record({"creatine": 5.0})  # Writes to file instantly
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.id, text="💪 Dosis de 5g de creatina asegurada en base de datos.\n" + build_status_text(), parse_mode="Markdown", reply_markup=get_main_keyboard())
+        
+    elif call.data == "nav_status":
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.id, text=build_status_text(), parse_mode="Markdown", reply_markup=get_main_keyboard())
+        
+    elif call.data == "nav_reset":
+        reset_today_record()  # Wipes file values for today
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.id, text="🔄 Base de datos reiniciada para el día de hoy.\n" + build_status_text(), parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+@bot.message_handler(func=lambda message: True)
+def handle_natural_language(message):
+    thinking = bot.reply_to(message, "🧠 Procesando tu texto con Gemini y guardando en base de datos...")
+    extracted_data = parse_food_with_ai(message.text)
+    
+    if extracted_data:
+        chicken = extracted_data.get("chicken", 0.0)
+        rice = extracted_data.get("rice", 0.0)
+        water = extracted_data.get("water", 0.0)
+        creatine = extracted_data.get("creatine", 0.0)
+        
+        # Tus fórmulas matemáticas exactas de macros
+        protein_gained = (chicken * 31 / 100) + (rice * 2.7 / 100)
+        carbs_gained = (rice * 28 / 100)
+        
+        # Structure payload to push into SQLite
+        payload = {
+            "chicken": chicken,
+            "rice": rice,
+            "water": water,
+            "creatine": creatine,
+            "protein": protein_gained,
+            "carbs": carbs_gained
+        }
+        
+        if chicken == 0 and rice == 0 and water == 0 and creatine == 0:
+            bot.edit_message_text("🤔 No detecté alimentos claros para guardar. ¡Intenta de nuevo!", chat_id=message.chat.id, message_id=thinking.message_id)
+        else:
+            update_today_record(payload)  # Pushes all calculations into database safely
+            bot.delete_message(chat_id=message.chat.id, message_id=thinking.message_id)
+            bot.send_message(message.chat.id, f"✅ **¡Guardado permanente exitoso!**\n🍗 Pollo: +{chicken}g | 🍚 Arroz: +{rice}g\n" + build_status_text(), parse_mode="Markdown", reply_markup=get_main_keyboard())
+    else:
+        bot.edit_message_text("❌ Error al conectar con Gemini. Revisa tu conexión.", chat_id=message.chat.id, message_id=thinking.message_id)
+
+# ==========================================
+# 6. EJECUCIÓN MULTIHILO CON FLASK
 # ==========================================
 def run_telebot():
-    print("Iniciando hilos de Telegram...")
+    print("💾 Base de datos SQLite inicializada y protegida en la nube.")
     bot.infinity_polling()
 
 if __name__ == '__main__':
-    # Asegurar que la base de datos esté lista
     init_db()
     
-    # Lanzar Telegram en un hilo separado para que no tranque a Flask
+    # Lanzar el bot de Telegram en su propio hilo independiente
     t = threading.Thread(target=run_telebot)
     t.start()
     
-    # Lanzar Flask en el puerto que Render requiere por defecto
+    # Lanzar Flask en el hilo principal para responder al puerto obligatorio de Render
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
